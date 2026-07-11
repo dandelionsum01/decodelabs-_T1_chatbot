@@ -1,180 +1,139 @@
-"""
-DecodeBot - Hybrid Rule-Based + Gemini AI Chatbot
-===================================================
-Decode Labs Internship - Project 1 (extended)
+    """
+    chatbot.py — Hybrid rule-based + Gemini chatbot with enforced brief replies.
 
-Satisfies the original Project 1 spec:
-  - Continuous input loop
-  - Input sanitization (case/whitespace)
-  - Dictionary-based knowledge base with 5+ intents
-  - Fallback for unrecognized input
-  - Clean exit command
+    Setup:
+        pip install google-genai python-dotenv
+        Create .env with: GEMINI_API_KEY=your_key_here
 
-...then goes further with the "hybrid architecture" pattern shown in the
-training deck: if no rule matches, the message is passed to the Gemini API
-for a real generative response, with conversation memory, logging, and
-graceful error handling.
+    Run:
+        python chatbot.py
+    """
 
-Setup:
-    pip install google-genai python-dotenv
-    Copy .env.example to .env and add your Gemini API key
-    (free key: https://aistudio.google.com/app/apikey)
+    import os
+    import time
+    from datetime import datetime
+    from dotenv import load_dotenv
+    from google import genai
+    from google.genai import types
 
-Run:
-    python gemini_chatbot.py
-"""
+    load_dotenv()
 
-import os
-from datetime import datetime
+    # ── Config ──────────────────────────────────────────────────────────────────
+    MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+    BOT_NAME   = "Bot"
+    LOG_FILE   = "chat_log.txt"
+    EXIT_WORDS = {"exit", "quit", "bye", "q"}
 
-from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+    SYSTEM_PROMPT = (
+        "You are a concise terminal chatbot. STRICT RULES:\n"
+        "- Answer in 1-3 plain sentences. Absolute maximum. No exceptions.\n"
+        "- Zero markdown: no **, no #, no bullet points, no numbered lists.\n"
+        "- One sentence of context after the direct answer, then stop.\n"
+        "- Only elaborate if the user explicitly asks for more detail.\n"
+    )
 
-load_dotenv()
+    RULES = {
+        "hi":           "Hey! What do you want to know?",
+        "hello":        "Hello! Ask me anything.",
+        "help":         "Just type any question. Say 'bye' to exit.",
+        "who are you":  f"I'm {BOT_NAME}, a simple chatbot backed by Gemini.",
+        "thanks":       "No problem.",
+        "thank you":    "You're welcome.",
+    }
 
-# ---------------------------------------------------------------------------
-# CONFIG
-# ---------------------------------------------------------------------------
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-LOG_FILE = "chat_log.txt"
-BOT_NAME = "DecodeBot"
+    # ── Colors ───────────────────────────────────────────────────────────────────
+    R = "\033[0m"
+    CYAN   = "\033[96m"
+    GREEN  = "\033[92m"
+    YELLOW = "\033[93m"
+    RED    = "\033[91m"
 
-SYSTEM_INSTRUCTION = (
-    f"You are {BOT_NAME}, a friendly and concise AI assistant built for a "
-    "Decode Labs internship demo. Keep answers short (2-4 sentences) unless "
-    "the user explicitly asks for more detail."
-)
+    # ── Helpers ───────────────────────────────────────────────────────────────────
+    def sanitize(text: str) -> str:
+        return text.lower().strip()
 
-EXIT_COMMANDS = {"exit", "quit", "bye", "goodbye"}
+    def log(role: str, text: str) -> None:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now().isoformat(timespec='seconds')}] {role}: {text}\n")
 
-# ---------------------------------------------------------------------------
-# RULE-BASED KNOWLEDGE BASE  (Project 1 requirement: dict, not if-elif, 5+ intents)
-# ---------------------------------------------------------------------------
-RULES = {
-    "hello": f"Hi there! I'm {BOT_NAME}. Ask me anything.",
-    "hi": "Hey! How can I help you today?",
-    "help": "Just chat normally - I'll answer using Gemini for anything I don't "
-            "already have a canned reply for. Type 'bye' to exit.",
-    "who are you": f"I'm {BOT_NAME}: a hybrid chatbot. Simple stuff gets an instant "
-                    "rule-based reply, everything else goes to Gemini.",
-    "what can you do": "I can handle quick commands instantly, and answer open-ended "
-                        "questions using Google's Gemini model.",
-    "thanks": "You're welcome!",
-    "thank you": "Anytime!",
-}
+    def bot_print(msg: str, tag: str = "") -> None:
+        suffix = f" {YELLOW}[{tag}]{R}" if tag else ""
+        print(f"{GREEN}{BOT_NAME}: {msg}{R}{suffix}")
 
-
-# ---------------------------------------------------------------------------
-# TERMINAL COLORS (small UX touch, purely cosmetic)
-# ---------------------------------------------------------------------------
-class Color:
-    USER = "\033[96m"
-    BOT = "\033[92m"
-    SYS = "\033[93m"
-    ERR = "\033[91m"
-    RESET = "\033[0m"
-
-
-# ---------------------------------------------------------------------------
-# CORE HELPERS
-# ---------------------------------------------------------------------------
-def sanitize(text: str) -> str:
-    """Normalize input the way Phase 1 of the spec requires."""
-    return text.lower().strip()
-
-
-def log_line(role: str, text: str) -> None:
-    """Append every turn to a log file with a timestamp."""
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"[{datetime.now().isoformat(timespec='seconds')}] {role}: {text}\n")
-
-
-def rule_based_reply(clean_input: str):
-    """Exact-match dictionary lookup. Returns None if nothing matches."""
-    return RULES.get(clean_input)
-
-
-def build_client():
-    """Create a Gemini client if an API key is available; otherwise degrade gracefully."""
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        print(
-            f"{Color.SYS}No GEMINI_API_KEY found. Add one to a .env file to enable "
-            f"Gemini responses. Running in rule-based-only mode for now.{Color.RESET}\n"
-        )
-        return None
-    try:
-        return genai.Client(api_key=api_key)
-    except Exception as e:
-        print(f"{Color.ERR}Could not initialize Gemini client: {e}{Color.RESET}")
-        return None
-
-
-def build_chat(client):
-    """Start a chat session so Gemini has conversation memory across turns."""
-    if client is None:
-        return None
-    try:
-        return client.chats.create(
-            model=MODEL_NAME,
-            config=types.GenerateContentConfig(system_instruction=SYSTEM_INSTRUCTION),
-        )
-    except TypeError:
-        # Fallback in case the installed SDK version doesn't accept `config` here
-        return client.chats.create(model=MODEL_NAME)
-
-
-# ---------------------------------------------------------------------------
-# MAIN LOOP
-# ---------------------------------------------------------------------------
-def main():
-    print(f"{Color.SYS}=== {BOT_NAME}: Hybrid Rule-Based + Gemini Chatbot ==={Color.RESET}")
-    print(f"{Color.SYS}Type 'bye', 'exit', or 'quit' to leave.{Color.RESET}\n")
-
-    client = build_client()
-    chat = build_chat(client)
-
-    while True:
+    # ── Gemini setup ──────────────────────────────────────────────────────────────
+    def init_gemini():
+        key = os.getenv("GEMINI_API_KEY")
+        if not key:
+            print(f"{YELLOW}No GEMINI_API_KEY — running rule-only mode.{R}\n")
+            return None, None
         try:
-            raw = input(f"{Color.USER}You: {Color.RESET}")
-        except (EOFError, KeyboardInterrupt):
-            print(f"\n{Color.BOT}{BOT_NAME}: Goodbye!{Color.RESET}")
-            break
+            client = genai.Client(api_key=key)
+            chat = client.chats.create(
+                model=MODEL,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    max_output_tokens=512,
+                ),
+            )
+            return client, chat
+        except Exception as e:
+            print(f"{RED}Gemini init failed: {e}{R}\n")
+            return None, None
 
-        clean = sanitize(raw)
-        if not clean:
-            continue
+    def ask_gemini(chat, user_input: str) -> tuple[str, str]:
+        """Returns (reply_text, tag_string)."""
+        # Prepend a brevity reminder — last thing the model sees before generating
+        prompt = f"[Reply in max 2 plain sentences, no markdown] {user_input}"
+        t0 = time.perf_counter()
+        try:
+            resp = chat.send_message(
+                prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    max_output_tokens=512,
+                ),
+            )
+            elapsed = time.perf_counter() - t0
+            usage = getattr(resp, "usage_metadata", None)
+            tok = getattr(usage, "total_token_count", "?") if usage else "?"
+            return resp.text.strip(), f"{elapsed:.1f}s · {tok} tok"
+        except Exception as e:
+            return f"Gemini error: {e}", "error"
 
-        log_line("You", raw)
+    # ── Main loop ─────────────────────────────────────────────────────────────────
+    def main():
+        print(f"{YELLOW}=== {BOT_NAME} | type 'bye' to exit ==={R}\n")
+        _, chat = init_gemini()
 
-        if clean in EXIT_COMMANDS:
-            print(f"{Color.BOT}{BOT_NAME}: Goodbye! \U0001F44B{Color.RESET}")
-            log_line(BOT_NAME, "Goodbye!")
-            break
+        while True:
+            try:
+                raw = input(f"{CYAN}You: {R}").strip()
+            except (EOFError, KeyboardInterrupt):
+                bot_print("Bye!")
+                break
 
-        # 1. Rule-based layer first: instant, free, zero hallucination risk
-        reply = rule_based_reply(clean)
-        tag = "rule"
+            if not raw:
+                continue
 
-        # 2. No rule matched -> pass to Gemini for a real generative answer
-        if reply is None:
-            if chat is None:
-                reply = "I do not understand. (Add a GEMINI_API_KEY to unlock full answers.)"
+            clean = sanitize(raw)
+            log("You", raw)
+
+            if clean in EXIT_WORDS:
+                bot_print("Bye!")
+                log(BOT_NAME, "Bye!")
+                break
+
+            # Rule layer first
+            if clean in RULES:
+                reply, tag = RULES[clean], "rule"
+            elif chat is None:
+                reply = "I don't have an answer for that. Add a GEMINI_API_KEY to unlock full responses."
                 tag = "fallback"
             else:
-                try:
-                    response = chat.send_message(raw)
-                    reply = response.text
-                    tag = "gemini"
-                except Exception as e:
-                    reply = f"Gemini request failed: {e}"
-                    tag = "error"
+                reply, tag = ask_gemini(chat, raw)
 
-        label = f" {Color.SYS}[{tag}]{Color.RESET}" if tag != "gemini" else ""
-        print(f"{Color.BOT}{BOT_NAME}: {reply}{Color.RESET}{label}")
-        log_line(BOT_NAME, reply)
+            bot_print(reply, tag)
+            log(BOT_NAME, reply)
 
-
-if __name__ == "__main__":
-    main()
+    if __name__ == "__main__":
+        main()
