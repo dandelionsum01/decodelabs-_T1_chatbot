@@ -1,3 +1,8 @@
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/9757e30f-b7bc-4ddd-8243-4cd4a7d647a5" width="100%" autoplay muted loop playsinline></video>
+</p>
+
+
 # DecodeBot — Hybrid Rule-Based + Gemini Chatbot
 
 Extended version of Decode Labs Project 1. Keeps the required rule-based
